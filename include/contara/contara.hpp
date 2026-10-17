@@ -4,3 +4,4 @@
 #include <contara/parallel.hpp>
 #include <contara/sequence.hpp>
 #include <contara/set_ops.hpp>
+#include <contara/zip.hpp>

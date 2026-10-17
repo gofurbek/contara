@@ -23,4 +23,10 @@ int main() {
     const auto squared = contara::parallel_map(x + y, [](int value) { return value * value; },
         {.workers = 2, .min_per_worker = 1});
     print("Parallel squares (original order)", squared);
+
+    std::cout << "Zip pairs: ";
+    for (auto&& [left, right] : contara::zip(x, y)) std::cout << '(' << left << ", " << right << ") ";
+    std::cout << '\n';
+    auto sums = contara::zip(x, y) | std::views::transform([](auto pair) { return pair.first + pair.second; });
+    print("Zipped sums", contara::to_vector(sums));
 }

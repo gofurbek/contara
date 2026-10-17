@@ -7,7 +7,6 @@
 #include <exception>
 #include <functional>
 #include <mutex>
-#include <optional>
 #include <ranges>
 #include <stdexcept>
 #include <thread>
@@ -25,7 +24,7 @@ struct parallel_options {
 template<class R, class F>
 requires std::ranges::random_access_range<const R> && std::ranges::sized_range<const R> &&
          std::copy_constructible<F> && std::invocable<F&, std::ranges::range_reference_t<const R>> &&
-         std::movable<std::remove_cvref_t<std::invoke_result_t<F&, std::ranges::range_reference_t<const R>>>>
+         std::move_constructible<std::remove_cvref_t<std::invoke_result_t<F&, std::ranges::range_reference_t<const R>>>>
 [[nodiscard]] auto parallel_map(const R& input, F function, parallel_options options = {}) {
     using result_type = std::remove_cvref_t<std::invoke_result_t<F&, std::ranges::range_reference_t<const R>>>;
     using difference_type = std::ranges::range_difference_t<const R>;
@@ -45,36 +44,66 @@ requires std::ranges::random_access_range<const R> && std::ranges::sized_range<c
         return output;
     }
 
-    // Distinct optional objects also make bool results safe (unlike vector<bool> writes).
-    std::vector<std::optional<result_type>> slots(size);
-    std::exception_ptr error;
-    std::mutex error_mutex;
-    std::atomic<bool> cancelled{false};
-    {
-        std::vector<std::jthread> threads;
-        threads.reserve(workers);
-        const auto chunk = size / workers;
-        const auto extra = size % workers;
-        std::size_t first = 0;
-        for (std::size_t worker = 0; worker < workers; ++worker) {
-            const auto last = first + chunk + (worker < extra ? 1 : 0);
-            threads.emplace_back([&, first, last, fn = function]() mutable {
-                try {
-                    for (auto i = first; i < last && !cancelled.load(std::memory_order_relaxed); ++i) {
-                        slots[i].emplace(std::invoke(fn, begin[static_cast<difference_type>(i)]));
-                    }
-                } catch (...) {
-                    std::lock_guard lock(error_mutex);
-                    if (!error) error = std::current_exception();
-                    cancelled.store(true, std::memory_order_relaxed);
+    const auto chunk = size / workers;
+    const auto extra = size % workers;
+    auto run = [&](auto consume) {
+        std::exception_ptr error;
+        std::mutex error_mutex;
+        std::atomic<bool> cancelled{false};
+        {
+            std::vector<std::jthread> threads;
+            threads.reserve(workers);
+            std::size_t first = 0;
+            try {
+                for (std::size_t worker = 0; worker < workers; ++worker) {
+                    const auto last = first + chunk + (worker < extra ? 1 : 0);
+                    threads.emplace_back([&, first, last, worker, fn = function]() mutable {
+                        try {
+                            // Check cancellation per block so arithmetic loops can vectorize.
+                            for (auto block = first; block < last && !cancelled.load(std::memory_order_relaxed);) {
+                                const auto end = block + std::min(std::size_t{256}, last - block);
+                                for (auto i = block; i < end; ++i) consume(worker, i, fn);
+                                block = end;
+                            }
+                        } catch (...) {
+                            std::lock_guard lock(error_mutex);
+                            if (!error) error = std::current_exception();
+                            cancelled.store(true, std::memory_order_relaxed);
+                        }
+                    });
+                    first = last;
                 }
-            });
-            first = last;
+            } catch (...) {
+                cancelled.store(true, std::memory_order_relaxed);
+                throw;
+            }
         }
-    } // jthreads join on normal return and during thread-creation failures
-    if (error) std::rethrow_exception(error);
-    output.reserve(size);
-    for (auto& slot : slots) output.emplace_back(std::move(*slot));
+        if (error) std::rethrow_exception(error);
+    };
+
+    constexpr bool direct = !std::same_as<result_type, bool> &&
+        std::is_trivially_default_constructible_v<result_type> &&
+        std::is_trivially_copyable_v<result_type> &&
+        std::is_assignable_v<result_type&, std::invoke_result_t<F&, std::ranges::range_reference_t<const R>>>;
+    if constexpr (direct) {
+        output.resize(size);
+        run([&](std::size_t, std::size_t i, F& fn) {
+            output[i] = std::invoke(fn, begin[static_cast<difference_type>(i)]);
+        });
+    } else {
+        // Separate chunks avoid vector<bool> bit races and per-element optional flags.
+        std::vector<std::vector<result_type>> chunks(workers);
+        for (std::size_t worker = 0; worker < workers; ++worker) {
+            chunks[worker].reserve(chunk + (worker < extra ? 1 : 0));
+        }
+        run([&](std::size_t worker, std::size_t i, F& fn) {
+            chunks[worker].emplace_back(std::invoke(fn, begin[static_cast<difference_type>(i)]));
+        });
+        output.reserve(size);
+        for (auto& values : chunks) {
+            for (auto&& value : values) output.emplace_back(std::move(value));
+        }
+    }
     return output;
 }
 
