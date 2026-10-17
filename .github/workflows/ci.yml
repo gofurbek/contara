@@ -1,0 +1,59 @@
+name: C++
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            compiler: g++
+            config: Debug
+          - os: ubuntu-latest
+            compiler: g++
+            config: Release
+          - os: ubuntu-latest
+            compiler: clang++
+            config: Release
+          - os: windows-latest
+            compiler: cl
+            config: Debug
+          - os: windows-latest
+            compiler: cl
+            config: Release
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        env:
+          CXX: ${{ matrix.compiler }}
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.config }} -DCONTARA_BUILD_BENCHMARKS=ON
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} --parallel
+      - name: Test
+        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
+      - name: Install
+        run: cmake --install build --config ${{ matrix.config }} --prefix install
+      - name: Configure installed-package consumer
+        env:
+          CXX: ${{ matrix.compiler }}
+        run: cmake -S tests/consumer -B consumer-build -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install" -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+      - name: Build installed-package consumer
+        run: cmake --build consumer-build --config ${{ matrix.config }} --parallel
+      - name: Test installed-package consumer
+        run: ctest --test-dir consumer-build -C ${{ matrix.config }} --output-on-failure
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

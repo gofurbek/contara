@@ -1,0 +1,9 @@
+/build*/
+/out/
+/install/
+/consumer-build/
+/.vs/
+*.exe
+*.obj
+*.pdb
+*.ilk
