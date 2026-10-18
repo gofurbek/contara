@@ -1,5 +1,6 @@
 #pragma once
 
+#include <contara/cartesian.hpp>
 #include <contara/convert.hpp>
 #include <contara/parallel.hpp>
 #include <contara/sequence.hpp>

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <forward_list>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <memory_resource>
 #include <numeric>
@@ -11,12 +12,38 @@
 #include <sstream>
 #include <string>
 
+namespace without_contara_ops {
+template<class L, class R>
+concept multiplied = requires(L&& a, R&& b) { std::forward<L>(a) * std::forward<R>(b); };
+template<class L, class R>
+concept zipped = requires(L&& a, R&& b) { std::forward<L>(a) % std::forward<R>(b); };
+static_assert(!multiplied<std::vector<int>&, std::vector<int>&>);
+static_assert(!zipped<std::vector<int>&, std::vector<int>&>);
+}
+
 namespace {
 int checks = 0;
 #define CHECK(...) do { ++checks; if (!(__VA_ARGS__)) throw std::runtime_error( \
     std::string("line ") + std::to_string(__LINE__) + ": " + #__VA_ARGS__); } while (false)
 
 using namespace contara::ops;
+
+template<class L, class R>
+concept multiplied = requires(L&& a, R&& b) { std::forward<L>(a) * std::forward<R>(b); };
+template<class L, class R>
+concept zipped = requires(L&& a, R&& b) { std::forward<L>(a) % std::forward<R>(b); };
+static_assert(multiplied<std::vector<int>&, std::array<int, 2>&>);
+static_assert(zipped<std::vector<int>&, std::array<int, 2>&>);
+static_assert(!multiplied<int (&)[2], int (&)[2]>);
+static_assert(!zipped<int (&)[2], int (&)[2]>);
+static_assert(!multiplied<std::vector<int>&, int> && !zipped<std::vector<int>&, int>);
+static_assert(!multiplied<int, std::vector<int>&> && !zipped<int, std::vector<int>&>);
+static_assert(!multiplied<std::vector<int>&, std::initializer_list<int>>);
+static_assert(!zipped<std::vector<int>&, std::initializer_list<int>>);
+using integer_stream_range = decltype(std::ranges::istream_view<int>(std::declval<std::istream&>()));
+static_assert(!multiplied<std::vector<int>&, integer_stream_range>);
+static_assert(multiplied<integer_stream_range, std::vector<int>&>);
+static_assert(3 * 4 == 12 && 7 % 4 == 3);
 
 template<class S>
 void check_set_algebra() {
@@ -344,7 +371,7 @@ struct tracked_result {
 constexpr bool zip_constexpr_check() {
     std::array a{1, 2, 3};
     std::array b{10, 20};
-    auto pairs = contara::zip(a, b);
+    auto pairs = a % b;
     int total = 0;
     for (auto [x, y] : pairs) total += x + y;
     return pairs.size() == 2 && total == 33 && pairs[1].second == 20;
@@ -355,6 +382,8 @@ void check_zip() {
     std::vector<int> a{1, 2, 3};
     std::array b{10, 20};
     auto pairs = contara::zip(a, b);
+    static_assert(std::same_as<decltype(pairs), decltype(a % b)>);
+    CHECK(contara::to_vector(a % b) == contara::to_vector(pairs));
     static_assert(std::ranges::view<decltype(pairs)>);
     static_assert(std::ranges::random_access_range<decltype(pairs)>);
     static_assert(std::ranges::common_range<decltype(pairs)>);
@@ -444,6 +473,183 @@ void check_zip() {
     int total = 0;
     for (auto&& [x, y] : contara::zip(first, second)) total += x + y;
     CHECK(total == 12 && resource.allocations == 0);
+    total = 0;
+    for (auto&& [x, y] : first % second) total += x + y;
+    CHECK(total == 12 && resource.allocations == 0);
+    auto owned_zip = std::vector<int>{1, 2} % std::vector<int>{10, 20, 30};
+    CHECK(owned_zip.size() == 2 && owned_zip[1].second == 20);
+    const std::array fixed{4, 5};
+    auto const_zip = fixed % b;
+    static_assert(std::same_as<decltype(const_zip[0].first), const int&>);
+    int raw[]{7, 8};
+    CHECK(contara::to_vector(raw % fixed)[0].first == 7);
+    CHECK(contara::to_vector(fixed % raw)[1].second == 8);
+}
+
+constexpr bool product_constexpr_check() {
+    std::array a{1, 2};
+    std::array b{10, 20, 30};
+    auto pairs = a * b;
+    int total = 0;
+    for (auto [x, y] : pairs) total += x + y;
+    return pairs.size() == 6 && total == 129 && pairs[4].first == 2 && pairs[4].second == 20;
+}
+static_assert(product_constexpr_check());
+
+void check_cartesian_product() {
+    std::vector<int> a{1, 2, 3};
+    std::array b{10, 20};
+    auto product = a * b;
+    static_assert(std::ranges::view<decltype(product)>);
+    static_assert(std::ranges::random_access_range<decltype(product)>);
+    static_assert(std::ranges::common_range<decltype(product)>);
+    static_assert(!std::ranges::borrowed_range<decltype(product)>);
+    static_assert(std::same_as<decltype(product), decltype(contara::cartesian_product(a, b))>);
+    static_assert(std::same_as<std::ranges::range_value_t<decltype(product)>, contara::zip_pair<int, int>>);
+    std::vector<contara::zip_pair<int, int>> expected;
+    for (int x : a) for (int y : b) expected.emplace_back(x, y);
+    CHECK(product.size() == 6 && contara::to_vector(product) == expected);
+    CHECK(contara::to_vector(contara::cartesian_product(a, b)) == expected);
+    CHECK(contara::to_vector(b * a).size() == 6);
+    std::vector<contara::zip_pair<int, int>> copied;
+    std::ranges::copy(product, std::back_inserter(copied));
+    CHECK(copied == expected);
+    CHECK(product.end() - product.begin() == 6 && product.begin() - product.end() == -6);
+    for (std::ptrdiff_t i = 0; i <= 6; ++i) {
+        for (std::ptrdiff_t j = 0; j <= 6; ++j) {
+            auto current = product.begin() + i;
+            current += j - i;
+            CHECK(current == product.begin() + j);
+            current -= j - i;
+            CHECK(current == product.begin() + i);
+            CHECK((product.begin() + j) - current == j - i);
+            CHECK((current < product.begin() + j) == (i < j));
+            CHECK((current <= product.begin() + j) == (i <= j));
+            CHECK((current > product.begin() + j) == (i > j));
+            CHECK((current >= product.begin() + j) == (i >= j));
+        }
+        if (i < 6) CHECK(product[i] == expected[static_cast<std::size_t>(i)]);
+    }
+    auto last = product.end();
+    CHECK((*--last) == expected.back());
+    CHECK((*(last--)) == expected.back() && *last == expected[4]);
+    auto start = product.begin();
+    CHECK((*(start++)) == expected[0] && *start == expected[1]);
+    CHECK(*(2 + product.begin()) == expected[2]);
+    CHECK(*(product.end() - 2) == expected[4]);
+    auto reversed = contara::to_vector(product | std::views::reverse);
+    CHECK(std::ranges::equal(reversed, expected | std::views::reverse));
+    const auto& const_product = product;
+    CHECK(const_product.size() == 6 && const_product[3] == expected[3]);
+    static_assert(std::same_as<decltype(const_product[0].first), int&>);
+    for (auto&& [x, y] : product) x += y;
+    CHECK(a == std::vector<int>({31, 32, 33}));
+    CHECK(copied[0].first == 1);
+    auto sums = a * b | std::views::transform([](auto p) { return p.first + p.second; });
+    CHECK(contara::to_vector(sums) == std::vector<int>({41, 51, 42, 52, 43, 53}));
+    auto zipped_sums = a % b | std::views::transform([](auto p) { return p.first + p.second; });
+    CHECK(contara::to_vector(zipped_sums) == std::vector<int>({41, 52}));
+    auto selected = product | std::views::filter([](auto p) { return p.second == 20; });
+    CHECK(contara::to_vector(selected).size() == 3);
+    auto nested = a * b * std::array{100, 200};
+    CHECK(nested.size() == 12 && nested[3].first.second == 20 && nested[3].second == 200);
+
+    auto owned = std::vector<int>{4, 5} * std::vector<int>{6, 7, 8};
+    const auto& const_owned = owned;
+    static_assert(std::same_as<decltype(const_owned[0].first), const int&>);
+    CHECK(owned.size() == 6 && const_owned[5].first == 5 && const_owned[5].second == 8);
+    auto empty_right = a * std::vector<int>{};
+    auto empty_left = std::vector<int>{} * b;
+    CHECK(empty_right.begin() == empty_right.end() && empty_right.size() == 0);
+    CHECK(empty_right.end() - empty_right.begin() == 0 && empty_right.begin() + 0 == empty_right.end());
+    CHECK(contara::to_vector(empty_left).empty() && empty_left.end() - empty_left.begin() == 0);
+    CHECK(contara::to_vector(std::views::iota(0) * std::vector<int>{}).empty());
+    auto unbounded = std::views::iota(0) * b;
+    static_assert(std::ranges::random_access_range<decltype(unbounded)>);
+    CHECK(contara::to_vector(unbounded | std::views::take(3)) == std::vector<contara::zip_pair<int, int>>({{0, 10}, {0, 20}, {1, 10}}));
+
+    std::list<int> linked{2, 4}, other{6, 8};
+    auto linked_product = linked * other;
+    static_assert(std::ranges::bidirectional_range<decltype(linked_product)>);
+    static_assert(!std::ranges::random_access_range<decltype(linked_product)>);
+    CHECK(contara::to_vector(linked_product | std::views::reverse) == std::vector<contara::zip_pair<int, int>>({{4, 8}, {4, 6}, {2, 8}, {2, 6}}));
+    std::forward_list<int> forward{3, 6};
+    auto forward_product = forward * b;
+    static_assert(std::ranges::forward_range<decltype(forward_product)>);
+    static_assert(!std::ranges::bidirectional_range<decltype(forward_product)>);
+    CHECK(contara::to_vector(forward_product).size() == 4);
+    std::istringstream input("7 8");
+    auto streamed = std::ranges::istream_view<int>(input) * b;
+    static_assert(std::ranges::input_range<decltype(streamed)>);
+    static_assert(!std::ranges::forward_range<decltype(streamed)>);
+    CHECK(contara::to_vector(streamed) == std::vector<contara::zip_pair<int, int>>({{7, 10}, {7, 20}, {8, 10}, {8, 20}}));
+    auto counted = std::ranges::subrange(std::counted_iterator(a.data(), 2), std::default_sentinel);
+    static_assert(!std::ranges::common_range<decltype(counted)>);
+    auto noncommon = counted * counted;
+    static_assert(std::ranges::random_access_range<decltype(noncommon)>);
+    CHECK(noncommon.size() == 4 && (*--noncommon.end()).second == 32);
+
+    int raw[]{1, 2};
+    CHECK(contara::to_vector(raw * b).size() == 4);
+    CHECK(contara::to_vector(b * raw).size() == 4);
+    CHECK(contara::to_vector(contara::cartesian_product(raw, raw)).size() == 4);
+    const std::array immutable{5, 6};
+    auto read_only = immutable * b;
+    static_assert(std::same_as<decltype(read_only[0].first), const int&>);
+    std::vector<bool> bits{true, false};
+    auto bit_product = bits * b;
+    static_assert(std::ranges::input_range<decltype(bit_product)>);
+    (*bit_product.begin()).first = false;
+    CHECK(!bits[0] && contara::to_vector(bit_product)[3].second == 20);
+    std::vector<std::unique_ptr<int>> pointers;
+    pointers.push_back(std::make_unique<int>(42));
+    auto pointer_product = pointers * b;
+    static_assert(std::ranges::input_range<decltype(pointer_product)>);
+    CHECK(*pointer_product[1].first == 42 && pointers[0]);
+    auto moved_product = std::move(pointers) * std::vector<int>{10, 20};
+    CHECK(*moved_product[1].first == 42 && moved_product[1].second == 20);
+    counting_resource resource;
+    std::pmr::vector<int> first({1, 2, 3}, &resource), second({4, 5}, &resource);
+    resource.allocations = 0;
+    int total = 0;
+    for (auto&& [x, y] : first * second) total += x + y;
+    CHECK(total == 39 && resource.allocations == 0);
+
+    auto huge = std::views::iota(std::uint64_t{0}, std::uint64_t{1'000'000'000}) *
+                std::views::iota(std::uint64_t{0}, std::uint64_t{1'000'000'000});
+    CHECK(huge.size() == 1'000'000'000'000'000'000ULL);
+    CHECK(huge[1'234'567'890'123LL].first == 1234 && huge[1'234'567'890'123LL].second == 567'890'123);
+    auto overflowing = std::views::iota(std::size_t{0}, std::numeric_limits<std::size_t>::max()) * b;
+    bool overflow_caught = false;
+    try { (void)overflowing.size(); } catch (const std::length_error&) { overflow_caught = true; }
+    CHECK(overflow_caught);
+    auto billions = std::views::iota(0, 2'000'000'000);
+    auto distance_overflow = billions * billions * billions;
+    bool distance_caught = false;
+    try { (void)(distance_overflow.end() - distance_overflow.begin()); }
+    catch (const std::length_error&) { distance_caught = true; }
+    CHECK(distance_caught);
+    distance_caught = false;
+    try { (void)(distance_overflow.begin() - distance_overflow.end()); }
+    catch (const std::length_error&) { distance_caught = true; }
+    CHECK(distance_caught);
+    auto powers = std::views::iota(0, 1 << 21);
+    auto signed_limit = powers * powers * powers;
+    using wide_difference = std::ranges::range_difference_t<decltype(signed_limit)>;
+    if constexpr (std::numeric_limits<wide_difference>::digits == 63) {
+        CHECK(signed_limit.begin() - signed_limit.end() == std::numeric_limits<wide_difference>::min());
+    }
+    for (int n = 0; n <= 4; ++n) for (int m = 0; m <= 4; ++m) {
+        auto grid = std::views::iota(0, n) * std::views::iota(0, m);
+        std::vector<contara::zip_pair<int, int>> oracle;
+        for (int x = 0; x < n; ++x) for (int y = 0; y < m; ++y) oracle.emplace_back(x, y);
+        CHECK(contara::to_vector(grid) == oracle);
+        CHECK(grid.end() - grid.begin() == n * m);
+        for (int i = 0; i < n * m; ++i) {
+            CHECK(grid[i] == oracle[static_cast<std::size_t>(i)]);
+            CHECK(*(grid.end() - (n * m - i)) == oracle[static_cast<std::size_t>(i)]);
+        }
+    }
 }
 
 void check_parallel() {
@@ -502,6 +708,152 @@ void check_parallel() {
     } catch (const std::runtime_error&) { generic_failure = true; }
     CHECK(generic_failure && tracked_result::live == 0);
 }
+
+struct owned_less {
+    int modulus = 1000;
+    bool operator()(const std::unique_ptr<int>& a, const std::unique_ptr<int>& b) const { return *a % modulus < *b % modulus; }
+    bool operator==(const owned_less&) const = default;
+};
+struct owned_hash {
+    int modulus = 1000;
+    std::size_t operator()(const std::unique_ptr<int>& value) const { return std::hash<int>{}(*value % modulus); }
+};
+struct owned_equal {
+    int modulus = 1000;
+    bool operator()(const std::unique_ptr<int>& a, const std::unique_ptr<int>& b) const { return *a % modulus == *b % modulus; }
+    bool operator==(const owned_equal&) const = default;
+};
+struct copy_failure_state {
+    std::atomic<int> copies{0}, live{0};
+};
+struct copy_failure_callback {
+    std::shared_ptr<copy_failure_state> state;
+    explicit copy_failure_callback(std::shared_ptr<copy_failure_state> value) : state(std::move(value)) { ++state->live; }
+    copy_failure_callback(const copy_failure_callback& other) : state(other.state) {
+        if (++state->copies == 2) throw std::runtime_error("callback copy failed");
+        ++state->live;
+    }
+    copy_failure_callback(copy_failure_callback&&) noexcept = default;
+    ~copy_failure_callback() { if (state) --state->live; }
+    int operator()(int n) const { return n; }
+};
+struct unusable_result_callback {
+    const std::unique_ptr<int>& operator()(int) const;
+};
+template<class F>
+concept int_parallel_callback = requires(const std::vector<int>& values, F function) {
+    contara::parallel_map(values, function);
+};
+static_assert(!int_parallel_callback<unusable_result_callback>);
+
+void check_review_regressions() {
+    std::unordered_set<int> overreserved{1, 2};
+    overreserved.reserve(100000);
+    const auto compact = overreserved | overreserved;
+    CHECK(compact == overreserved && compact.bucket_count() < overreserved.bucket_count());
+    CHECK((overreserved - std::unordered_set<int>{}).bucket_count() < overreserved.bucket_count());
+    auto values = std::views::iota(0, 20);
+    for (const std::size_t workers : {std::size_t{1}, std::size_t{4}}) {
+        const auto result = contara::parallel_map(values, [](int&& n) { return n * n; },
+            {.workers = workers, .min_per_worker = 1});
+        CHECK(result.size() == 20 && result[19] == 361);
+    }
+    auto state = std::make_shared<copy_failure_state>();
+    bool copy_failure = false;
+    try {
+        (void)contara::parallel_map(values, copy_failure_callback(state), {.workers = 4, .min_per_worker = 1});
+    } catch (const std::runtime_error&) { copy_failure = true; }
+    CHECK(copy_failure && state->live == 0 && state->copies == 2);
+    CHECK(contara::parallel_map(std::array<int, 0>{}, [](int n) { return n; }).empty());
+
+    std::set<std::unique_ptr<int>, owned_less> a, b;
+    a.insert(std::make_unique<int>(1));
+    a.insert(std::make_unique<int>(2));
+    b.insert(std::make_unique<int>(2));
+    const auto kept = a.rbegin()->get();
+    contara::intersect_into(a, b);
+    CHECK(a.size() == 1 && a.begin()->get() == kept);
+    auto removed = contara::difference(std::move(a), b);
+    CHECK(removed.empty());
+    std::set<std::unique_ptr<int>, owned_less> mismatched(owned_less{10});
+    mismatched.insert(std::make_unique<int>(2));
+    a.insert(std::make_unique<int>(2));
+    bool policy_failure = false;
+    try { contara::difference_into(a, mismatched); }
+    catch (const std::invalid_argument&) { policy_failure = true; }
+    CHECK(policy_failure && a.size() == 1);
+    std::unordered_set<std::unique_ptr<int>, owned_hash, owned_equal> hashed, selected;
+    hashed.insert(std::make_unique<int>(1));
+    hashed.insert(std::make_unique<int>(2));
+    selected.insert(std::make_unique<int>(2));
+    contara::intersect_into(hashed, selected);
+    CHECK(hashed.size() == 1 && **hashed.begin() == 2);
+    contara::difference_into(hashed, selected);
+    CHECK(hashed.empty());
+
+    std::vector<std::unique_ptr<int>> left, right;
+    left.push_back(std::make_unique<int>(1));
+    right.push_back(std::make_unique<int>(2));
+    const auto joined = contara::concat(std::move(left), std::move(right));
+    CHECK(joined.size() == 2 && *joined[0] == 1 && *joined[1] == 2);
+    counting_resource resource;
+    std::pmr::vector<int> buffer({1, 2}, &resource), tail({3, 4}, &resource);
+    std::pmr::vector<int> move_control({1}, &resource);
+    resource.allocations = 0;
+    const auto moved_control = std::move(move_control);
+    const auto vector_move_overhead = resource.allocations;
+    buffer.reserve(8);
+    const auto pointer = buffer.data();
+    resource.allocations = 0;
+    const auto reused = contara::concat(std::move(buffer), tail);
+    CHECK(reused.data() == pointer && reused.size() == 4 && resource.allocations == vector_move_overhead);
+    std::pmr::list<int> first({1}, &resource), second({2}, &resource);
+    std::pmr::list<int> list_control({1}, &resource);
+    resource.allocations = 0;
+    const auto moved_list_control = std::move(list_control);
+    const auto list_move_overhead = resource.allocations;
+    const auto node = std::addressof(second.front());
+    resource.allocations = 0;
+    const auto spliced = contara::concat(std::move(first), std::move(second));
+    CHECK(std::addressof(spliced.back()) == node && second.empty() && resource.allocations == list_move_overhead);
+
+    auto powers = std::views::iota(0, 1 << 21);
+    auto huge = powers * powers * powers;
+    auto zipped = contara::zip(huge, huge);
+    using difference = std::ranges::range_difference_t<decltype(zipped)>;
+    if constexpr (std::numeric_limits<difference>::digits == 63) {
+        bool end_failure = false;
+        try { (void)zipped.end(); } catch (const std::length_error&) { end_failure = true; }
+        CHECK(end_failure);
+        end_failure = false;
+        try { (void)std::as_const(zipped).end(); } catch (const std::length_error&) { end_failure = true; }
+        CHECK(end_failure);
+        auto position = zipped.begin();
+        position -= std::numeric_limits<difference>::min();
+        auto target = zipped.begin() + std::numeric_limits<difference>::max();
+        ++target;
+        CHECK(position == target);
+    }
+    auto short_zip = contara::zip(huge, std::array{1, 2});
+    CHECK(short_zip.end() - short_zip.begin() == 2);
+    using product_iterator = std::ranges::iterator_t<decltype(huge)>;
+    CHECK(product_iterator{} - product_iterator{} == 0);
+
+#if defined(__SIZEOF_INT128__)
+    int visits = 0;
+    const auto count = (__uint128_t{1} << 65) + 8;
+    auto oversized = std::views::iota(__uint128_t{0}, count) |
+        std::views::transform([&](auto) -> int { ++visits; throw std::runtime_error("range was visited"); });
+    bool size_failure = false;
+    try { (void)contara::to_vector(oversized); }
+    catch (const std::length_error&) { size_failure = true; }
+    CHECK(size_failure && visits == 0);
+    size_failure = false;
+    try { (void)contara::parallel_map(oversized, [](int n) { return n; }); }
+    catch (const std::length_error&) { size_failure = true; }
+    CHECK(size_failure && visits == 0);
+#endif
+}
 } // namespace
 
 int main() {
@@ -517,6 +869,8 @@ int main() {
         check_performance_contracts();
         check_parallel();
         check_zip();
+        check_cartesian_product();
+        check_review_regressions();
         std::cout << "Passed " << checks << " checks\n";
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';

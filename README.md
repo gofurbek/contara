@@ -3,7 +3,7 @@
 **Container algebra, simpler C++.**
 
 A small C++20 header-only library for readable operations on standard containers,
-easy conversions, lazy range pairing, and explicit multithreading. No third-party dependencies.
+easy conversions, lazy zip and Cartesian products, and explicit multithreading. No third-party dependencies.
 
 ```cpp
 #include <contara/contara.hpp>
@@ -25,8 +25,10 @@ int main() {
 }
 ```
 
-The results are ordinary standard containers. Binary operations preserve lvalue
-inputs. Explicitly moving a left operand allows its storage to be reused; moving
+Set algebra, concatenation, and conversions return ordinary standard containers.
+Zip and Cartesian products return lazy views. Operations preserve lvalue inputs
+unless you modify elements through a view. Explicitly moving a left operand
+allows its storage to be reused; moving
 a right sequence allows its elements or list nodes to be transferred.
 Operators live in `contara::ops`; import them in the scope where you want them.
 
@@ -40,13 +42,15 @@ Operators live in `contara::ops`; import them in the scope where you want them.
 | Same | `a ^ b` | `contara::symmetric_difference(a, b)` | In exactly one input |
 | `std::vector`, `std::deque`, `std::list` | `a + b` | `contara::concat(a, b)` | Concatenation; keeps duplicates |
 | Same | `a += b` | `contara::append(a, b)` | Append to `a` |
+| Input ranges (types may differ) | `a % b` | `contara::zip(a, b)` | Pair corresponding elements; stop at the shorter input |
+| Input left, forward right | `a * b` | `contara::cartesian_product(a, b)` | All pairs, with the right input varying fastest |
 
 Sets also support `|=`, `&=`, `-=`, and `^=`. These update the left container in
 place and retain surviving nodes. Named versions are `unite_into`,
 `intersect_into`, `difference_into`, and `symmetric_difference_into`. Sequence `+` means
 concatenation. Element-wise numerical addition is outside this API.
 
-Binary operands must have the same complete container type. Convert explicitly
+Set algebra and sequence concatenation require the same complete container type. Convert explicitly
 when mixing containers:
 
 ```cpp
@@ -80,6 +84,8 @@ set preserves its current iteration order, which is unspecified.
 
 `contara::zip(a, b)` pairs corresponding elements and stops at the shorter input.
 It is a lazy C++20 view: lvalue inputs are borrowed without visiting or copying elements.
+Use `using contara::zip;` for `zip(a, b)`, or import `contara::ops` for the
+equivalent shorthand `a % b`. Both spellings have identical semantics and costs.
 
 ```cpp
 std::vector<int> ids{1, 2, 3};
@@ -103,7 +109,8 @@ concepts even when the underlying elements are move-only.
 Compose with standard views:
 
 ```cpp
-auto sums = contara::to_vector(contara::zip(x, y) |
+using namespace contara::ops;
+auto sums = contara::to_vector(x % y |
     std::views::transform([](auto pair) { return pair.first + pair.second; }));
 ```
 
@@ -125,6 +132,41 @@ For two inputs, zip adds `O(1)` work per pair and `O(1)` auxiliary storage.
 Complete traversal yields `k = min(n, m)` pairs in `O(k)` time, excluding work
 done by underlying views. Zip does not allocate a result buffer.
 
+## Cartesian products
+
+`contara::cartesian_product(a, b)` and the opt-in `a * b` yield every pair in
+nested-loop order. The right input varies fastest; duplicates are retained.
+
+```cpp
+using namespace contara::ops;
+std::vector<int> a{1, 2}, b{10, 20};
+auto zipped = a % b; // (1, 10), (2, 20)
+auto product = a * b; // (1, 10), (1, 20), (2, 10), (2, 20)
+auto rows = contara::to_vector(product); // materialize owned pair values
+```
+
+The left input may be single-pass. The right must be a forward range because
+it restarts for each left element. An empty input produces no pairs. An infinite
+right input keeps traversal on the first left element. A single-pass left input
+may read its first element during `begin()`, even if the right input is empty.
+
+Lvalues are referenced and temporaries are owned, with the same element/reference
+rules as zip. Product iterators refer to their view: keep the view alive and do
+not move it while using its iterators. Mutating an element affects every pair
+that refers to it. Explicitly moving elements out of a product can leave later
+pairs referring to already moved-from elements.
+
+Creating a view over lvalues takes `O(1)` time and storage. Visiting all `n * m`
+pairs takes `O(n * m)` time and `O(1)` auxiliary storage, excluding underlying
+range operations. The view allocates no pair buffer. Random-access inputs with
+a sized right range retain `O(1)` indexing and offsets. `size()` is available
+when both inputs are sized and throws `std::length_error` on size overflow.
+
+`%` and `*` remain in `contara::ops`. Two raw C arrays require the named functions
+because C++ binary operator overloads need a user-defined operand. Both operators
+have normal multiplicative precedence and group left to right; `a * b * c`
+produces nested pairs. Add parentheses when mixing zip and product operations.
+
 ## Multithreading
 
 ```cpp
@@ -136,6 +178,9 @@ auto output = contara::parallel_map(input, [](int n) {
 `parallel_map` accepts a const-readable random-access, sized range, such as a
 vector, array, span, or deque. It returns a vector in input order. Result values
 may be move-only and need not be default-constructible. Boolean results work too.
+Value-producing ranges retain their value category when invoking the callback.
+Sizes that exceed the output container or iterator offset limits throw
+`std::length_error` before traversal or worker startup.
 
 - `workers = 0` uses `std::thread::hardware_concurrency()`, falling back to one.
 - The worker count is capped at `max(1, size / min_per_worker)`. Small inputs
@@ -190,12 +235,19 @@ normalization. Normalization adds `O(m log m)` work for ordered sets or expected
 equivalent behavior. Custom policies must
 satisfy the standard container requirements.
 
+In-place intersection/difference also support move-only keys when their policies
+are compatible. If incompatible policies require copying noncopyable keys,
+these operations throw `std::invalid_argument` before updating the left set.
+
 Binary set operations on lvalues copy selected elements. Compound operations
 and operations on a moved left set reuse surviving nodes. They provide the basic
 exception guarantee: a failure can leave a partially updated container. List
 concatenation can splice a moved right operand when allocators match. Self-append
 copies original elements directly without a temporary container; move-only
 self-append is rejected. Iterators and references follow standard invalidation rules.
+Named `concat(std::move(a), b)` reuses left storage just like the corresponding
+`+` expression. Hashed results preserve policies and load factor, but may compact
+excess bucket capacity rather than copying a source's reservations.
 
 Use the benchmark on your workload before choosing parallel execution. Cheap
 callbacks and small inputs can be slower with threads.
@@ -243,7 +295,7 @@ Run `contara_benchmarks` from the build output directory. Each case first checks
 result equality. Cases cover balanced and uneven set operations, sorted
 conversion, repeated vector appends, in-place set updates, and a CPU-heavy
 sequential transform versus a four-worker map. Timings include allocation,
-destruction, and thread startup; they are illustrative and depend on hardware.
+destruction, full-output checksums, and thread startup; they are illustrative and depend on hardware.
 
 The test suite covers set membership properties, differing policies, allocator
 retention, sequence aliasing, range conversions, real worker execution, ordered

@@ -29,6 +29,8 @@ hints. Unordered intersection iterates the smaller set and retrieves matching
 values from the left set, retaining left representatives of equivalent keys.
 Unordered union reserves an upper bound once to avoid a second growth rehash;
 for overlapping sets this can reserve up to about twice the needed buckets.
+Self-union/intersection and empty-right copy paths build compact hashed results;
+they retain hash/equality/load policies without cloning excess reserved buckets.
 
 Exact self-difference and self-symmetric-difference return an empty result in
 constant time. Ordered intersections with disjoint endpoint ranges can also
@@ -76,6 +78,9 @@ sets, and `O(m)` temporary storage. Different hash functions do not require
 rebuilding when key equality is compatible. Early exits skip unnecessary
 normalization. Stateful policy authors can define equality to establish
 equivalent behavior and enable the fast path.
+In-place intersection/difference support noncopyable keys with compatible
+policies. If normalization would require copying such keys, they throw
+`std::invalid_argument` before mutation.
 
 ## Sequences
 
@@ -95,7 +100,7 @@ Repeated single-element appends therefore take `O(N)` total relocation work,
 rather than the `O(N^2)` possible with reserving the exact new size every time.
 Lvalue concatenation reserves the known final vector size once.
 
-Binary operations on moved sequences reuse left storage. A copied left list
+Binary operations and named `concat` on moved sequences reuse left storage. A copied left list
 followed by a moved right list takes `O(n)` with equal allocators. Two moved
 lists concatenate in `O(1)` with equal allocators. Right element moves leave
 the source valid but with unspecified element values; list splicing empties it.
@@ -120,7 +125,8 @@ rvalue references. A matching mutable container rvalue transfers its storage.
 
 ## Zip ranges
 
-For `contara::zip(a, b)`, let `k = min(n, m)`.
+For `contara::zip(a, b)` or its `contara::ops` shorthand `a % b`, let
+`k = min(n, m)`. The operator forwards directly to `zip`.
 
 | Operation | Zip overhead | Extra storage |
 | --- | --- | --- |
@@ -143,6 +149,38 @@ Random-access sized inputs have a common end iterator positioned at the shorter
 length, so obtaining the end and reversing the view require no linear search.
 Other inputs use a sentinel that stops when either constituent reaches its end.
 The view preserves forward/bidirectional capability where both inputs provide it.
+Creating a common random-access end checks that the shorter length fits the
+iterator difference type; otherwise it throws `std::length_error` rather than
+wrapping the offset. This check remains constant time.
+
+## Cartesian products
+
+`contara::cartesian_product(a, b)` and `contara::ops::operator*` return the same
+lazy view. Let `p = n * m`; the right input varies fastest and must be a forward
+range so it can be restarted without buffering. The left may be single-pass.
+
+| Operation | Product overhead | Extra storage |
+| --- | --- | --- |
+| Create a view over lvalues | `O(1)` | `O(1)` |
+| Dereference, increment, compare to end | `O(1)` | `O(1)` |
+| Complete traversal | `O(p)` for nonempty inputs; `O(1)` if either is empty | `O(1)` |
+| Size, when both inputs are sized | `O(1)` | `O(1)` |
+| Index/offset/difference, with random-access inputs and a sized right input | `O(1)` | `O(1)` |
+| Decrement, with bidirectional inputs and a common or random-access sized right input | `O(1)` | `O(1)` |
+| Materialize to vector | `O(p)` plus element copies/moves | `O(p)` result |
+
+These bounds exclude underlying range operations: a filtered range's increment
+may scan, for example. Construction does not visit elements or allocate a pair
+buffer. Owning rvalues retain the input containers' ordinary move costs. The
+result size is multiplied with an overflow check; `size()` throws
+`std::length_error` if the result does not fit its size type. Random-access
+distance also throws if it cannot fit its signed difference type. Iterator
+arithmetic must stay within the valid product range, as with standard iterators.
+
+Product iterators contain a pointer to their view, so the view is not a borrowed
+range, even with lvalue inputs. Keep the view alive and stationary while using
+its iterators. Materialization owns pair values; lazy pairs reference source
+elements/proxies. Moving an element out affects later pairs using that element.
 
 ## Parallel map
 
@@ -158,6 +196,10 @@ auxiliary storage `O(n + p)`, plus the `O(n)` output. Boolean workers use separa
 packed buffers to prevent concurrent writes to shared bits. Cancellation is
 checked every 256 elements; callbacks already in progress may still complete.
 Small inputs run sequentially, using only output storage.
+The input size is checked against output capacity and iterator offset limits
+before traversal or worker startup. Reserving conversions similarly check size
+before narrowing it to the destination container's size type. Empty parallel
+inputs return without querying hardware concurrency or obtaining an iterator.
 
 ## Standard-library basis
 
@@ -167,3 +209,4 @@ Small inputs run sequentially, using only output storage.
 - [List splicing and allocator requirements](https://eel.is/c++draft/list.ops)
 - [Container element data-race requirements, including vector bool](https://eel.is/c++draft/container.requirements.dataraces)
 - [Standard zip-view semantics](https://eel.is/c++draft/range.zip)
+- [Standard Cartesian product semantics](https://eel.is/c++draft/range.cartesian)

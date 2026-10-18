@@ -1,5 +1,7 @@
 #pragma once
 
+#include <contara/detail/checked_size.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <concepts>
@@ -24,6 +26,8 @@ struct parallel_options {
 template<class R, class F>
 requires std::ranges::random_access_range<const R> && std::ranges::sized_range<const R> &&
          std::copy_constructible<F> && std::invocable<F&, std::ranges::range_reference_t<const R>> &&
+         std::constructible_from<std::remove_cvref_t<std::invoke_result_t<F&, std::ranges::range_reference_t<const R>>>,
+                                 std::invoke_result_t<F&, std::ranges::range_reference_t<const R>>> &&
          std::move_constructible<std::remove_cvref_t<std::invoke_result_t<F&, std::ranges::range_reference_t<const R>>>>
 [[nodiscard]] auto parallel_map(const R& input, F function, parallel_options options = {}) {
     using result_type = std::remove_cvref_t<std::invoke_result_t<F&, std::ranges::range_reference_t<const R>>>;
@@ -31,16 +35,18 @@ requires std::ranges::random_access_range<const R> && std::ranges::sized_range<c
     if (options.min_per_worker == 0) {
         throw std::invalid_argument("contara: min_per_worker must be positive");
     }
-    const auto size = static_cast<std::size_t>(std::ranges::size(input));
+    std::vector<result_type> output;
+    const auto size = detail::checked_size<std::size_t>(std::ranges::size(input), output.max_size());
+    (void)detail::checked_size<difference_type>(size);
+    if (size == 0) return output;
     const auto begin = std::ranges::begin(input);
     auto workers = options.workers;
     if (workers == 0) workers = std::max(1u, std::thread::hardware_concurrency());
     workers = std::min(workers, std::max(std::size_t{1}, size / options.min_per_worker));
 
-    std::vector<result_type> output;
-    if (workers == 1 || size == 0) {
+    if (workers == 1) {
         output.reserve(size);
-        for (auto&& value : input) output.emplace_back(std::invoke(function, value));
+        for (auto&& value : input) output.emplace_back(std::invoke(function, std::forward<decltype(value)>(value)));
         return output;
     }
 

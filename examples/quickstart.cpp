@@ -11,6 +11,7 @@ void print(const char* label, const R& range) {
 
 int main() {
     using namespace contara::ops;
+    using contara::zip;
     const std::set<int> a{1, 2, 3}, b{3, 4, 5};
     print("Union", a | b);
     print("Intersection", a & b);
@@ -25,8 +26,11 @@ int main() {
     print("Parallel squares (original order)", squared);
 
     std::cout << "Zip pairs: ";
-    for (auto&& [left, right] : contara::zip(x, y)) std::cout << '(' << left << ", " << right << ") ";
+    for (auto&& [left, right] : zip(x, y)) std::cout << '(' << left << ", " << right << ") ";
     std::cout << '\n';
-    auto sums = contara::zip(x, y) | std::views::transform([](auto pair) { return pair.first + pair.second; });
+    auto sums = x % y | std::views::transform([](auto pair) { return pair.first + pair.second; });
     print("Zipped sums", contara::to_vector(sums));
+    std::cout << "Cartesian pairs: ";
+    for (auto&& [left, right] : x * y) std::cout << '(' << left << ", " << right << ") ";
+    std::cout << '\n';
 }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <contara/detail/checked_size.hpp>
+
 #include <concepts>
 #include <deque>
 #include <list>
@@ -25,7 +27,7 @@ template<template<class...> class Container, std::ranges::input_range R>
     } else {
         result_type result;
         if constexpr (std::ranges::sized_range<R> && requires { result.reserve(std::ranges::size(range)); }) {
-            result.reserve(std::ranges::size(range));
+            result.reserve(detail::checked_size<typename result_type::size_type>(std::ranges::size(range), result.max_size()));
         }
         if constexpr (std::same_as<result_type, std::set<std::ranges::range_value_t<R>>>) {
             auto previous = result.end();

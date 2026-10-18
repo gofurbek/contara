@@ -17,8 +17,10 @@ double measure(F operation, int rounds = 5) {
         const auto start = std::chrono::steady_clock::now();
         for (int round = 0; round < rounds; ++round) {
             const auto result = operation();
-            observed = observed ^ static_cast<std::uint64_t>(result.size());
-            if (!result.empty()) observed = observed ^ static_cast<std::uint64_t>(*result.begin());
+            auto checksum = static_cast<std::uint64_t>(result.size());
+            for (const auto& value : result)
+                checksum = (checksum ^ static_cast<std::uint64_t>(value)) * 0x9e3779b97f4a7c15ULL;
+            observed = observed ^ checksum;
         }
         const auto stop = std::chrono::steady_clock::now();
         const auto milliseconds = std::chrono::duration<double, std::milli>(stop - start).count();
@@ -45,6 +47,8 @@ void compare(const char* label, Reference reference, Library library, int rounds
 } // namespace
 
 int main() {
+    using contara::ops::operator%;
+    using contara::ops::operator*;
     const auto a = contara::to_set(std::views::iota(0, 20000));
     const auto b = contara::to_set(std::views::iota(10000, 30000));
     const auto stl_union = [&] {
@@ -107,7 +111,18 @@ int main() {
         for (std::size_t i = 0; i < values.size(); ++i) result.push_back(values[i] + offsets[i]);
         return result;
     }, [&] {
-        auto sums = contara::zip(values, offsets) | std::views::transform([](auto pair) { return pair.first + pair.second; });
+        auto sums = values % offsets | std::views::transform([](auto pair) { return pair.first + pair.second; });
+        return contara::to_vector(sums);
+    });
+    const auto product_left = contara::to_vector(std::views::iota(std::uint64_t{0}, std::uint64_t{300}));
+    const auto product_right = contara::to_vector(std::views::iota(std::uint64_t{0}, std::uint64_t{400}));
+    compare("Cartesian sums: nested loops versus lazy product", [&] {
+        std::vector<std::uint64_t> result;
+        result.reserve(product_left.size() * product_right.size());
+        for (const auto x : product_left) for (const auto y : product_right) result.push_back(x + y);
+        return result;
+    }, [&] {
+        auto sums = product_left * product_right | std::views::transform([](auto pair) { return pair.first + pair.second; });
         return contara::to_vector(sums);
     });
     const auto sequential = [&] {
@@ -118,5 +133,5 @@ int main() {
     };
     const auto parallel = [&] { return contara::parallel_map(values, work, {.workers = 4}); };
     compare("CPU-heavy map (Contara uses 4 workers)", sequential, parallel);
-    std::cout << "Timings include allocation and thread startup. Results depend on hardware and workload.\n";
+    std::cout << "Timings include allocation, destruction, full-output checksums, and thread startup. Results depend on hardware and workload.\n";
 }

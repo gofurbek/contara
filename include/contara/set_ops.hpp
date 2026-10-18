@@ -7,6 +7,7 @@
 #include <iterator>
 #include <memory>
 #include <set>
+#include <stdexcept>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -43,6 +44,17 @@ S empty_like(const S& source) {
     }
 }
 
+template<class S>
+S copy_like(const S& source) {
+    if constexpr (ordered_set<S>) return S(source, source.get_allocator());
+    else {
+        auto result = empty_like(source);
+        result.reserve(source.size());
+        result.insert(source.begin(), source.end());
+        return result;
+    }
+}
+
 // Both operands are interpreted using the left operand's key equivalence.
 template<class S, class F>
 decltype(auto) with_compatible_rhs(const S& a, const S& b, F operation) {
@@ -56,12 +68,14 @@ decltype(auto) with_compatible_rhs(const S& a, const S& b, F operation) {
     if (compatible) {
         return operation(b);
     }
-    auto normalized = empty_like(a);
-    if constexpr (hashed_set<S>) {
-        normalized.reserve(b.size());
+    if constexpr (std::is_copy_constructible_v<typename S::value_type>) {
+        auto normalized = empty_like(a);
+        if constexpr (hashed_set<S>) normalized.reserve(b.size());
+        normalized.insert(b.begin(), b.end());
+        return operation(normalized);
+    } else {
+        throw std::invalid_argument("contara: noncopyable keys require compatible policies");
     }
-    normalized.insert(b.begin(), b.end());
-    return operation(normalized);
 }
 
 enum class set_operation { unite, intersect, difference, symmetric_difference };
@@ -77,7 +91,7 @@ S combine(const S& a, const S& b) {
         if constexpr (Op == set_operation::difference || Op == set_operation::symmetric_difference) {
             return empty_like(a);
         } else {
-            return S(a, a.get_allocator());
+            return copy_like(a);
         }
     }
     if constexpr (Op == set_operation::intersect || Op == set_operation::difference) {
@@ -85,6 +99,8 @@ S combine(const S& a, const S& b) {
     }
     if constexpr (Op == set_operation::intersect) {
         if (b.empty()) return empty_like(a);
+    } else {
+        if (b.empty()) return copy_like(a);
     }
     return with_compatible_rhs(a, b, [&](const S& rhs) {
         auto result = empty_like(a);

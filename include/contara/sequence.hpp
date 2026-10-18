@@ -103,24 +103,27 @@ template<sequence_container S>
     return result;
 }
 
-namespace ops {
 template<sequence_container S>
-[[nodiscard]] S operator+(const S& a, const S& b) { return concat(a, b); }
-
-template<sequence_container S>
-[[nodiscard]] S operator+(S&& a, const S& b) {
+[[nodiscard]] S concat(S&& a, const S& b) {
     append(a, b);
     return std::move(a);
 }
 
 template<sequence_container S>
-[[nodiscard]] S operator+(const S& a, S&& b) { return concat(a, std::move(b)); }
-
-template<sequence_container S>
-[[nodiscard]] S operator+(S&& a, S&& b) {
+[[nodiscard]] S concat(S&& a, S&& b) {
     append(a, std::move(b));
     return std::move(a);
 }
+
+namespace ops {
+template<sequence_container S>
+[[nodiscard]] S operator+(const S& a, const S& b) { return concat(a, b); }
+template<sequence_container S>
+[[nodiscard]] S operator+(S&& a, const S& b) { return concat(std::move(a), b); }
+template<sequence_container S>
+[[nodiscard]] S operator+(const S& a, S&& b) { return concat(a, std::move(b)); }
+template<sequence_container S>
+[[nodiscard]] S operator+(S&& a, S&& b) { return concat(std::move(a), std::move(b)); }
 
 template<sequence_container S>
 S& operator+=(S& a, const S& b) { return append(a, b); }

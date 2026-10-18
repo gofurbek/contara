@@ -1,5 +1,7 @@
 #pragma once
 
+#include <contara/detail/checked_size.hpp>
+
 #include <algorithm>
 #include <concepts>
 #include <initializer_list>
@@ -100,6 +102,12 @@ concept zip_source = std::ranges::input_range<R> && (std::ranges::viewable_range
     (!std::is_lvalue_reference_v<R> && std::movable<std::remove_reference_t<R>> &&
      !zip_initializer_list<std::remove_cvref_t<R>>));
 
+// Input ranges are arrays or user-defined types. Two raw arrays cannot be
+// operands of an overloaded binary operator; the named functions still work.
+template<class L, class R>
+concept range_operator_operands = !std::is_array_v<std::remove_cvref_t<L>> ||
+                                 !std::is_array_v<std::remove_cvref_t<R>>;
+
 template<zip_source R>
 constexpr auto zip_all(R&& range) {
     if constexpr (std::ranges::viewable_range<R>) return std::views::all(std::forward<R>(range));
@@ -160,7 +168,11 @@ class zip_view : public std::ranges::view_interface<zip_view<Left, Right>> {
             right_ += static_cast<std::iter_difference_t<J>>(n);
             return *this;
         }
-        constexpr iterator& operator-=(difference_type n) requires random { return *this += -n; }
+        constexpr iterator& operator-=(difference_type n) requires random {
+            left_ -= static_cast<std::iter_difference_t<I>>(n);
+            right_ -= static_cast<std::iter_difference_t<J>>(n);
+            return *this;
+        }
         constexpr auto operator[](difference_type n) const requires random { return *(*this + n); }
         friend constexpr iterator operator+(iterator i, difference_type n) requires random { i += n; return i; }
         friend constexpr iterator operator+(difference_type n, iterator i) requires random { i += n; return i; }
@@ -206,7 +218,7 @@ public:
     constexpr auto end() {
         if constexpr (std::ranges::random_access_range<Left> && std::ranges::random_access_range<Right> &&
                       std::ranges::sized_range<Left> && std::ranges::sized_range<Right>) {
-            return begin() + static_cast<typename iterator<false>::difference_type>(size());
+            return begin() + detail::checked_size<typename iterator<false>::difference_type>(size());
         } else return sentinel<false>(std::ranges::end(left_), std::ranges::end(right_));
     }
     constexpr auto begin() const requires std::ranges::input_range<const Left> && std::ranges::input_range<const Right> {
@@ -215,7 +227,7 @@ public:
     constexpr auto end() const requires std::ranges::input_range<const Left> && std::ranges::input_range<const Right> {
         if constexpr (std::ranges::random_access_range<const Left> && std::ranges::random_access_range<const Right> &&
                       std::ranges::sized_range<const Left> && std::ranges::sized_range<const Right>) {
-            return begin() + static_cast<typename iterator<true>::difference_type>(size());
+            return begin() + detail::checked_size<typename iterator<true>::difference_type>(size());
         } else return sentinel<true>(std::ranges::end(left_), std::ranges::end(right_));
     }
     constexpr auto size() requires std::ranges::sized_range<Left> && std::ranges::sized_range<Right> { return shorter_size(left_, right_); }
@@ -228,6 +240,14 @@ template<detail::zip_source L, detail::zip_source R>
     auto right_view = detail::zip_all(std::forward<R>(right));
     return zip_view<decltype(left_view), decltype(right_view)>(std::move(left_view), std::move(right_view));
 }
+
+namespace ops {
+template<detail::zip_source L, detail::zip_source R>
+requires detail::range_operator_operands<L, R>
+[[nodiscard]] constexpr auto operator%(L&& left, R&& right) {
+    return contara::zip(std::forward<L>(left), std::forward<R>(right));
+}
+} // namespace ops
 
 } // namespace contara
 
