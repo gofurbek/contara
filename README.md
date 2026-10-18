@@ -5,32 +5,75 @@
 A small C++20 header-only library for readable operations on standard containers,
 easy conversions, lazy zip and Cartesian products, and explicit multithreading. No third-party dependencies.
 
+## Quick start: vectors
+
 ```cpp
 #include <contara/contara.hpp>
+#include <vector>
 
 int main() {
     using namespace contara::ops;
 
-    std::set<int> a{1, 2, 3}, b{3, 4, 5};
-    auto common = a & b; // {3}
-    auto all    = a | b; // {1, 2, 3, 4, 5}
-    auto only_a = a - b; // {1, 2}
-    auto unique = a ^ b; // {1, 2, 4, 5}: in exactly one input
+    std::vector<int> a{1, 2, 2};
+    std::vector<int> b{3, 4};
 
-    std::vector<int> x{3, 1, 3}, y{2, 4};
-    auto joined = x + y;                            // {3, 1, 3, 2, 4}
-    auto sorted = contara::to_set(joined);           // {1, 2, 3, 4}
-    auto hashed = contara::to_unordered_set(joined); // unique; unspecified order
-    auto back   = contara::to_vector(sorted);       // {1, 2, 3, 4}
+    auto c = a + b;  // {1, 2, 2, 3, 4}; a and b stay unchanged
+
+    std::vector<int> d;
+    d = a + b;      // assignment works too: {1, 2, 2, 3, 4}
+
+    a += b;         // a becomes {1, 2, 2, 3, 4}
 }
 ```
+
+For sequences, `+` concatenates and keeps duplicates; `+=` appends to the left
+container. Import `contara::ops` in the scope where you use these operators.
+See the runnable [quickstart example](examples/quickstart.cpp) for a complete
+program covering these operations.
 
 Set algebra, concatenation, and conversions return ordinary standard containers.
 Zip and Cartesian products return lazy views. Operations preserve lvalue inputs
 unless you modify elements through a view. Explicitly moving a left operand
-allows its storage to be reused; moving
-a right sequence allows its elements or list nodes to be transferred.
-Operators live in `contara::ops`; import them in the scope where you want them.
+allows its storage to be reused; moving a right sequence allows its elements or
+list nodes to be transferred.
+
+## Deques and lists
+
+The same concatenation syntax works with `std::deque` and `std::list`:
+
+```cpp
+using namespace contara::ops;
+
+std::deque<int> queue{1, 2}, extra{3, 4};
+auto combined = queue + extra; // deque: {1, 2, 3, 4}
+queue += extra;               // queue becomes {1, 2, 3, 4}
+
+std::list<int> first{5, 6}, second{7, 8};
+auto linked = first + second; // list: {5, 6, 7, 8}
+first += second;              // first becomes {5, 6, 7, 8}
+```
+
+Each result keeps the input container type. Named equivalents are
+`contara::concat(a, b)` and `contara::append(a, b)`.
+
+## Sets and unordered sets
+
+Use the set operators when you want unique-key union, intersection, difference,
+or symmetric difference:
+
+```cpp
+using namespace contara::ops;
+
+std::set<int> a{1, 2, 3}, b{3, 4, 5};
+auto common = a & b; // {3}
+auto all    = a | b; // {1, 2, 3, 4, 5}
+auto only_a = a - b; // {1, 2}
+auto unique = a ^ b; // {1, 2, 4, 5}: in exactly one input
+
+std::unordered_set<int> x{1, 2, 3}, y{2, 4};
+auto shared = x & y; // unordered_set containing 2
+auto merged = x | y; // contains 1, 2, 3, 4; iteration order is unspecified
+```
 
 ## Operations
 
@@ -54,7 +97,10 @@ Set algebra and sequence concatenation require the same complete container type.
 when mixing containers:
 
 ```cpp
-auto common = contara::to_set(x) & contara::to_set(y);
+using namespace contara::ops;
+std::vector<int> x{1, 2, 2};
+std::list<int> y{2, 3};
+auto common = contara::to_set(x) & contara::to_set(y); // {2}
 ```
 
 Use parentheses when mixing operators: `a - (b & c)`. Normal C++ operator
@@ -65,10 +111,18 @@ precedence applies. C++ cannot introduce a new operator such as `@`.
 `to_vector`, `to_set`, `to_unordered_set`, `to_deque`, and `to_list` accept C++20
 input ranges, including arrays, lists, containers, and range pipelines.
 The generic spelling is `contara::to<std::vector>(range)`.
+For this array example, also include `<array>`:
 
 ```cpp
-auto even = joined | std::views::filter([](int n) { return n % 2 == 0; });
-auto output = contara::to_vector(even); // materialize only when needed
+std::array<int, 5> values{3, 1, 3, 2, 4};
+auto vector = contara::to_vector(values);       // {3, 1, 3, 2, 4}
+auto deque  = contara::to_deque(values);        // {3, 1, 3, 2, 4}
+auto list   = contara::to_list(values);         // {3, 1, 3, 2, 4}
+auto sorted = contara::to_set(values);          // {1, 2, 3, 4}
+auto hashed = contara::to_unordered_set(values); // same unique keys; unspecified order
+
+auto even = values | std::views::filter([](int n) { return n % 2 == 0; });
+auto output = contara::to_vector(even); // {2, 4}; materialize only when needed
 ```
 
 Views follow standard C++ lifetime and iterator-invalidation rules. Keep their
@@ -110,8 +164,9 @@ Compose with standard views:
 
 ```cpp
 using namespace contara::ops;
+std::vector<int> x{1, 2, 3}, y{10, 20};
 auto sums = contara::to_vector(x % y |
-    std::views::transform([](auto pair) { return pair.first + pair.second; }));
+    std::views::transform([](auto pair) { return pair.first + pair.second; })); // {11, 22}
 ```
 
 Lvalue sources are referenced and must stay alive. Viewable rvalue containers
@@ -170,9 +225,11 @@ produces nested pairs. Add parentheses when mixing zip and product operations.
 ## Multithreading
 
 ```cpp
+std::vector<int> input(8192, 3);
 auto output = contara::parallel_map(input, [](int n) {
     return n * n;
 }, {.workers = 4, .min_per_worker = 1024});
+// output contains 8192 values, each equal to 9
 ```
 
 `parallel_map` accepts a const-readable random-access, sized range, such as a
